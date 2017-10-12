@@ -95,7 +95,13 @@ public class DLibLandmarks68Detector implements IDLibFaceDetector {
     public native boolean isFaceLandmarksDetectorReady();
 
     @Override
+    public native boolean isFaceRecognitionDetectorReady();
+
+    @Override
     public native void prepareFaceDetector();
+
+    @Override
+    public native void prepareFaceRecognitionDetector(String path);
 
     @Override
     public native void prepareFaceLandmarksDetector(String path);

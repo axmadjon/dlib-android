@@ -335,9 +335,15 @@ public class SampleOfFacesAndLandmarksActivity2
                             face68ModelPath.getAbsolutePath());
                     }
 
-                    return true;
-                }
-            });
+                        if (!mLandmarksDetector.isFaceRecognitionDetectorReady()) {
+                            String absolutePath = new File(face68ModelPath.getParent(), "dlib_face_recognition_resnet_model_v1.dat")
+                                    .getAbsolutePath();
+                            mLandmarksDetector.prepareFaceRecognitionDetector(absolutePath);
+                        }
+
+                        return true;
+                    }
+                });
     }
 
     private Context getContext() {

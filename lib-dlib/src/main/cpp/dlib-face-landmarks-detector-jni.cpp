@@ -28,7 +28,6 @@
 #include <my/profiler.h>
 #include <my/dlib/data/messages.pb.h>
 #include <dlib/dnn.h>
-#include <dlib/gui_widgets.h>
 #include <dlib/clustering.h>
 
 using namespace dlib;
@@ -124,11 +123,21 @@ void convertBitmapToArray2d(JNIEnv *env, jobject bitmap, dlib::array2d<dlib::rgb
 // JNI ////////////////////////////////////////////////////////////////////////
 
 dlib::shape_predictor sFaceLandmarksDetector;
+anet_type sFaceRecognition;
 dlib::frontal_face_detector sFaceDetector;
 
 extern "C" JNIEXPORT jboolean JNICALL
 JNI_METHOD(isFaceDetectorReady)(JNIEnv *env, jobject thiz) {
     if (sFaceDetector.num_detectors() > 0) {
+        return JNI_TRUE;
+    } else {
+        return JNI_FALSE;
+    }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+JNI_METHOD(isFaceRecognitionDetectorReady)(JNIEnv *env, jobject thiz) {
+    if (sFaceRecognition.num_layers > 0) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
@@ -157,6 +166,22 @@ JNI_METHOD(prepareFaceDetector)(JNIEnv *env, jobject thiz) {
 
     LOGI("L%d: sFaceDetector is initialized (took %.3f ms)", __LINE__, interval);
     LOGI("L%d: sFaceDetector.num_detectors()=%lu", __LINE__, sFaceDetector.num_detectors());
+}
+
+
+extern "C" JNIEXPORT void JNICALL
+JNI_METHOD(prepareFaceRecognitionDetector)(JNIEnv *env, jobject thiz, jstring recognitionPath) {
+    const char *rPath = env->GetStringUTFChars(recognitionPath, JNI_FALSE);
+
+    // Profiler.
+    Profiler profiler;
+    profiler.start();
+
+    dlib::deserialize(rPath) >> sFaceRecognition;
+
+    double interval = profiler.stopAndGetInterval();
+    LOGI("L%d: sFaceRecognition is initialized (took %.3f ms)", __LINE__, interval);
+    env->ReleaseStringUTFChars(recognitionPath, rPath);
 }
 
 extern "C" JNIEXPORT void JNICALL
