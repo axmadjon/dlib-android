@@ -27,6 +27,49 @@
 #include <my/jni.h>
 #include <my/profiler.h>
 #include <my/dlib/data/messages.pb.h>
+#include <dlib/dnn.h>
+#include <dlib/gui_widgets.h>
+#include <dlib/clustering.h>
+
+using namespace dlib;
+
+// ----------------------------------------------------------------------------------------
+
+// The next bit of code defines a ResNet network.  It's basically copied
+// and pasted from the dnn_imagenet_ex.cpp example, except we replaced the loss
+// layer with loss_metric and made the network somewhat smaller.  Go read the introductory
+// dlib DNN examples to learn what all this stuff means.
+//
+// Also, the dnn_metric_learning_on_images_ex.cpp example shows how to train this network.
+// The dlib_face_recognition_resnet_model_v1 model used by this example was trained using
+// essentially the code shown in dnn_metric_learning_on_images_ex.cpp except the
+// mini-batches were made larger (35x15 instead of 5x5), the iterations without progress
+// was set to 10000, the jittering you can see below in jitter_image() was used during
+// training, and the training dataset consisted of about 3 million images instead of 55.
+// Also, the input layer was locked to images of size 150.
+template<template<int, template<typename> class, int, typename> class block, int N,
+        template<typename> class BN, typename SUBNET>
+using residual = add_prev1<block<N, BN, 1, tag1<SUBNET>>>;
+
+template<template<int, template<typename> class, int, typename> class block, int N,
+        template<typename> class BN, typename SUBNET>
+using residual_down = add_prev2<avg_pool<2, 2, 2, 2, skip1<tag2<block<N, BN, 2, tag1<SUBNET>>>>>>;
+
+template<int N, template<typename> class BN, int stride, typename SUBNET>
+using block  = BN<con<N, 3, 3, 1, 1, relu<BN<con<N, 3, 3, stride, stride, SUBNET>>>>>;
+
+template<int N, typename SUBNET> using ares      = relu<residual<block, N, affine, SUBNET>>;
+template<int N, typename SUBNET> using ares_down = relu<residual_down<block, N, affine, SUBNET>>;
+
+template<typename SUBNET> using alevel0 = ares_down<256, SUBNET>;
+template<typename SUBNET> using alevel1 = ares<256, ares<256, ares_down<256, SUBNET>>>;
+template<typename SUBNET> using alevel2 = ares<128, ares<128, ares_down<128, SUBNET>>>;
+template<typename SUBNET> using alevel3 = ares<64, ares<64, ares<64, ares_down<64, SUBNET>>>>;
+template<typename SUBNET> using alevel4 = ares<32, ares<32, ares<32, SUBNET>>>;
+
+using anet_type = loss_metric<fc_no_bias<128, avg_pool_everything<alevel0<alevel1<alevel2<alevel3<alevel4<max_pool<3, 3, 2, 2, relu<affine<con<32, 7, 7, 2, 2, input_rgb_image_sized<150>>>>>>>>>>>>>;
+
+// ----------------------------------------------------------------------------------------
 
 #define LOGI(...) \
   ((void)__android_log_print(ANDROID_LOG_INFO, "dlib-jni:", __VA_ARGS__))
@@ -37,11 +80,9 @@
 using namespace ::com::my::jni::dlib::data;
 
 // FIXME: Create a class inheriting from dlib::array2d<dlib::rgb_pixel>.
-void convertBitmapToArray2d(JNIEnv* env,
-                            jobject bitmap,
-                            dlib::array2d<dlib::rgb_pixel>& out) {
+void convertBitmapToArray2d(JNIEnv *env, jobject bitmap, dlib::array2d<dlib::rgb_pixel> &out) {
     AndroidBitmapInfo bitmapInfo;
-    void* pixels;
+    void *pixels;
     int state;
 
     if (0 > (state = AndroidBitmap_getInfo(env, bitmap, &bitmapInfo))) {
@@ -63,10 +104,10 @@ void convertBitmapToArray2d(JNIEnv* env,
     LOGI("L%d: info.width=%d, info.height=%d", __LINE__, bitmapInfo.width, bitmapInfo.height);
     out.set_size((long) bitmapInfo.height, (long) bitmapInfo.width);
 
-    char* line = (char*) pixels;
+    char *line = (char *) pixels;
     for (int h = 0; h < bitmapInfo.height; ++h) {
         for (int w = 0; w < bitmapInfo.width; ++w) {
-            uint32_t* color = (uint32_t*) (line + 4 * w);
+            uint32_t *color = (uint32_t *) (line + 4 * w);
 
             out[h][w].red = (unsigned char) (0xFF & ((*color) >> 24));
             out[h][w].green = (unsigned char) (0xFF & ((*color) >> 16));
@@ -86,8 +127,7 @@ dlib::shape_predictor sFaceLandmarksDetector;
 dlib::frontal_face_detector sFaceDetector;
 
 extern "C" JNIEXPORT jboolean JNICALL
-JNI_METHOD(isFaceDetectorReady)(JNIEnv* env,
-                                jobject thiz) {
+JNI_METHOD(isFaceDetectorReady)(JNIEnv *env, jobject thiz) {
     if (sFaceDetector.num_detectors() > 0) {
         return JNI_TRUE;
     } else {
@@ -96,8 +136,7 @@ JNI_METHOD(isFaceDetectorReady)(JNIEnv* env,
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-JNI_METHOD(isFaceLandmarksDetectorReady)(JNIEnv* env,
-                                         jobject thiz) {
+JNI_METHOD(isFaceLandmarksDetectorReady)(JNIEnv *env, jobject thiz) {
     if (sFaceLandmarksDetector.num_parts() > 0) {
         return JNI_TRUE;
     } else {
@@ -106,8 +145,7 @@ JNI_METHOD(isFaceLandmarksDetectorReady)(JNIEnv* env,
 }
 
 extern "C" JNIEXPORT void JNICALL
-JNI_METHOD(prepareFaceDetector)(JNIEnv *env,
-                                jobject thiz) {
+JNI_METHOD(prepareFaceDetector)(JNIEnv *env, jobject thiz) {
     // Profiler.
     Profiler profiler;
     profiler.start();
@@ -122,9 +160,7 @@ JNI_METHOD(prepareFaceDetector)(JNIEnv *env,
 }
 
 extern "C" JNIEXPORT void JNICALL
-JNI_METHOD(prepareFaceLandmarksDetector)(JNIEnv *env,
-                                         jobject thiz,
-                                         jstring detectorPath) {
+JNI_METHOD(prepareFaceLandmarksDetector)(JNIEnv *env, jobject thiz, jstring detectorPath) {
     const char *path = env->GetStringUTFChars(detectorPath, JNI_FALSE);
 
     // Profiler.
@@ -141,7 +177,8 @@ JNI_METHOD(prepareFaceLandmarksDetector)(JNIEnv *env,
     double interval = profiler.stopAndGetInterval();
 
     LOGI("L%d: sFaceLandmarksDetector is initialized (took %.3f ms)", __LINE__, interval);
-    LOGI("L%d: sFaceLandmarksDetector.num_parts()=%lu", __LINE__, sFaceLandmarksDetector.num_parts());
+    LOGI("L%d: sFaceLandmarksDetector.num_parts()=%lu", __LINE__,
+         sFaceLandmarksDetector.num_parts());
 
     env->ReleaseStringUTFChars(detectorPath, path);
 
@@ -151,9 +188,7 @@ JNI_METHOD(prepareFaceLandmarksDetector)(JNIEnv *env,
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-JNI_METHOD(detectFaces)(JNIEnv *env,
-                        jobject thiz,
-                        jobject bitmap) {
+JNI_METHOD(detectFaces)(JNIEnv *env, jobject thiz, jobject bitmap) {
     // Profiler.
     Profiler profiler;
     profiler.start();
@@ -184,10 +219,10 @@ JNI_METHOD(detectFaces)(JNIEnv *env,
         // Profiler.
         profiler.start();
 
-        dlib::rectangle& det = dets.at(i);
+        dlib::rectangle &det = dets.at(i);
 
-        Face* face = faces.add_faces();
-        RectF* bound = face->mutable_bound();
+        Face *face = faces.add_faces();
+        RectF *bound = face->mutable_bound();
 
         bound->set_left((float) det.left() / width);
         bound->set_top((float) det.top() / height);
@@ -205,7 +240,7 @@ JNI_METHOD(detectFaces)(JNIEnv *env,
     // Prepare the return message.
     int outSize = faces.ByteSize();
     jbyteArray out = env->NewByteArray(outSize);
-    jbyte* buffer = new jbyte[outSize];
+    jbyte *buffer = new jbyte[outSize];
 
     faces.SerializeToArray(buffer, outSize);
     env->SetByteArrayRegion(out, 0, outSize, buffer);
@@ -219,13 +254,8 @@ JNI_METHOD(detectFaces)(JNIEnv *env,
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-JNI_METHOD(detectLandmarksFromFace)(JNIEnv *env,
-                                    jobject thiz,
-                                    jobject bitmap,
-                                    jlong left,
-                                    jlong top,
-                                    jlong right,
-                                    jlong bottom) {
+JNI_METHOD(detectLandmarksFromFace)(JNIEnv *env, jobject thiz, jobject bitmap, jlong left,
+                                    jlong top, jlong right, jlong bottom) {
     // Profiler.
     Profiler profiler;
     profiler.start();
@@ -256,10 +286,10 @@ JNI_METHOD(detectLandmarksFromFace)(JNIEnv *env,
     // You get the idea, you can get all the face part locations if
     // you want them.  Here we just store them in shapes so we can
     // put them on the screen.
-    for (unsigned long i = 0 ; i < shape.num_parts(); ++i) {
-        dlib::point& pt = shape.part(i);
+    for (unsigned long i = 0; i < shape.num_parts(); ++i) {
+        dlib::point &pt = shape.part(i);
 
-        Landmark* landmark = landmarks.add_landmarks();
+        Landmark *landmark = landmarks.add_landmarks();
         landmark->set_x((float) pt.x() / width);
         landmark->set_y((float) pt.y() / height);
     }
@@ -275,7 +305,7 @@ JNI_METHOD(detectLandmarksFromFace)(JNIEnv *env,
     // Prepare the return message.
     int outSize = landmarks.ByteSize();
     jbyteArray out = env->NewByteArray(outSize);
-    jbyte* buffer = new jbyte[outSize];
+    jbyte *buffer = new jbyte[outSize];
 
     landmarks.SerializeToArray(buffer, outSize);
     env->SetByteArrayRegion(out, 0, outSize, buffer);
@@ -289,9 +319,7 @@ JNI_METHOD(detectLandmarksFromFace)(JNIEnv *env,
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-JNI_METHOD(detectLandmarksFromFaces)(JNIEnv *env,
-                                     jobject thiz,
-                                     jobject bitmap,
+JNI_METHOD(detectLandmarksFromFaces)(JNIEnv *env, jobject thiz, jobject bitmap,
                                      jbyteArray faceRects) {
     // Profiler.
     Profiler profiler;
@@ -310,14 +338,14 @@ JNI_METHOD(detectLandmarksFromFaces)(JNIEnv *env,
     profiler.start();
 
     // Translate the input face-rects message into something we recognize here.
-    jbyte* pFaceRects = env->GetByteArrayElements(faceRects, NULL);
+    jbyte *pFaceRects = env->GetByteArrayElements(faceRects, NULL);
     jsize pFaceRectsLen = env->GetArrayLength(faceRects);
     RectFList msgBounds;
     msgBounds.ParseFromArray(pFaceRects, pFaceRectsLen);
     env->ReleaseByteArrayElements(faceRects, pFaceRects, 0);
     std::vector<dlib::rectangle> bounds;
     for (int i = 0; i < msgBounds.rects().size(); ++i) {
-        const RectF& msgBound = msgBounds.rects().Get(i);
+        const RectF &msgBound = msgBounds.rects().Get(i);
         bounds.push_back(dlib::rectangle((long) msgBound.left(),
                                          (long) msgBound.top(),
                                          (long) msgBound.right(),
@@ -339,18 +367,18 @@ JNI_METHOD(detectLandmarksFromFaces)(JNIEnv *env,
         profiler.start();
 
         // To protobuf message.
-        Face* face = faces.add_faces();
+        Face *face = faces.add_faces();
         // Transfer face boundary.
-        RectF* bound = face->mutable_bound();
+        RectF *bound = face->mutable_bound();
         bound->set_left((float) bounds[j].left() / width);
         bound->set_top((float) bounds[j].top() / height);
         bound->set_right((float) bounds[j].right() / width);
         bound->set_bottom((float) bounds[j].bottom() / height);
         // Transfer face landmarks.
-        for (u_long i = 0 ; i < shape.num_parts(); ++i) {
-            dlib::point& pt = shape.part(i);
+        for (u_long i = 0; i < shape.num_parts(); ++i) {
+            dlib::point &pt = shape.part(i);
 
-            Landmark* landmark = face->add_landmarks();
+            Landmark *landmark = face->add_landmarks();
             landmark->set_x((float) pt.x() / width);
             landmark->set_y((float) pt.y() / height);
         }
@@ -364,7 +392,7 @@ JNI_METHOD(detectLandmarksFromFaces)(JNIEnv *env,
     // Prepare the return message.
     int outSize = faces.ByteSize();
     jbyteArray out = env->NewByteArray(outSize);
-    jbyte* buffer = new jbyte[outSize];
+    jbyte *buffer = new jbyte[outSize];
 
     faces.SerializeToArray(buffer, outSize);
     env->SetByteArrayRegion(out, 0, outSize, buffer);
@@ -377,9 +405,7 @@ JNI_METHOD(detectLandmarksFromFaces)(JNIEnv *env,
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-JNI_METHOD(detectFacesAndLandmarks)(JNIEnv *env,
-                                    jobject thiz,
-                                    jobject bitmap) {
+JNI_METHOD(detectFacesAndLandmarks)(JNIEnv *env, jobject thiz, jobject bitmap) {
     if (sFaceDetector.num_detectors() == 0) {
         LOGI("L%d: sFaceDetector is not initialized!", __LINE__);
         throwException(env, "sFaceDetector is not initialized!");
@@ -433,18 +459,18 @@ JNI_METHOD(detectFacesAndLandmarks)(JNIEnv *env,
         profiler.start();
 
         // To protobuf message.
-        Face* face = faces.add_faces();
+        Face *face = faces.add_faces();
         // Transfer face boundary.
-        RectF* bound = face->mutable_bound();
+        RectF *bound = face->mutable_bound();
         bound->set_left((float) dets[j].left() / width);
         bound->set_top((float) dets[j].top() / height);
         bound->set_right((float) dets[j].right() / width);
         bound->set_bottom((float) dets[j].bottom() / height);
         // Transfer face landmarks.
-        for (u_long i = 0 ; i < shape.num_parts(); ++i) {
-            dlib::point& pt = shape.part(i);
+        for (u_long i = 0; i < shape.num_parts(); ++i) {
+            dlib::point &pt = shape.part(i);
 
-            Landmark* landmark = face->add_landmarks();
+            Landmark *landmark = face->add_landmarks();
             landmark->set_x((float) pt.x() / width);
             landmark->set_y((float) pt.y() / height);
         }
@@ -458,7 +484,7 @@ JNI_METHOD(detectFacesAndLandmarks)(JNIEnv *env,
     // Prepare the return message.
     int outSize = faces.ByteSize();
     jbyteArray out = env->NewByteArray(outSize);
-    jbyte* buffer = new jbyte[outSize];
+    jbyte *buffer = new jbyte[outSize];
 
     faces.SerializeToArray(buffer, outSize);
     env->SetByteArrayRegion(out, 0, outSize, buffer);
